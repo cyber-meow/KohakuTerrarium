@@ -59,6 +59,19 @@ function _artifactName(seed) {
   return trimmed.length > 60 ? trimmed.slice(0, 60) + "…" : trimmed
 }
 
+/** Same-origin media URL, cache-busted so a republish of the same path reloads. */
+function _revisionedMediaUrl(raw, revisionId) {
+  const content = mediaSourceUrl(raw) || raw
+  if (
+    !revisionId ||
+    !(content.startsWith("/api/files/raw?") || /^\/api\/sessions\/[^/]+\/artifacts\//.test(content))
+  ) {
+    return content
+  }
+  const sep = content.includes("?") ? "&" : "?"
+  return `${content}${sep}canvas_revision=${encodeURIComponent(revisionId)}`
+}
+
 function _setupCanvasStore() {
   return () => {
     const artifacts = ref([])
@@ -187,10 +200,7 @@ function _setupCanvasStore() {
           const isImage = preview.kind === "image"
           const raw = preview.content
           const revisionId = p.jobId || p.id || `${msg.id}:tool:${partIndex}`
-          let content = isImage ? mediaSourceUrl(raw) || raw : raw
-          if (isImage && raw.startsWith("file://") && content.startsWith("/api/files/raw?")) {
-            content += `&canvas_revision=${encodeURIComponent(revisionId)}`
-          }
+          const content = isImage ? _revisionedMediaUrl(raw, revisionId) : raw
           upsert({
             sourceId: `file:${preview.file_path}`,
             revisionId,

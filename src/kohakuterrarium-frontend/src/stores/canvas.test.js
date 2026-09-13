@@ -397,7 +397,38 @@ describe("canvas store — canvas_image preview", () => {
     }
     store.scanMessage(msg)
     expect(store.artifacts[0].type).toBe("image")
-    expect(store.artifacts[0].content).toBe(url)
+    expect(store.artifacts[0].content).toBe(`${url}?canvas_revision=m_art%3Atool%3A0`)
+  })
+
+  it("cache-busts a repeated basename artifact URL so the browser reloads", () => {
+    const store = useCanvasStore()
+    const url = "/api/sessions/s/artifacts/canvas_images/_grid.png"
+    const make = (id, jobId) => ({
+      id,
+      role: "assistant",
+      parts: [
+        {
+          type: "tool",
+          jobId,
+          resultMeta: {
+            canvas_preview: {
+              kind: "image",
+              file_path: "/work/left/_grid.png",
+              lang: "png",
+              content: url,
+            },
+          },
+        },
+      ],
+    })
+    store.scanMessage(make("m1", "teruri"))
+    const first = store.activeArtifact.content
+    store.scanMessage(make("m2", "heiress"))
+    const second = store.activeArtifact.content
+    expect(first).toContain("canvas_images/_grid.png")
+    expect(second).toContain("canvas_images/_grid.png")
+    expect(first).not.toBe(second)
+    expect(second).toContain("canvas_revision=heiress")
   })
 
   it("re-promoting the same path updates the existing image", () => {
@@ -425,8 +456,12 @@ describe("canvas store — canvas_image preview", () => {
     store.scanMessage(make("m1", "/api/sessions/s/artifacts/canvas_images/a.png"))
     store.scanMessage(make("m2", "/api/sessions/s/artifacts/canvas_images/b.png"))
     expect(store.artifacts).toHaveLength(1)
-    expect(store.artifacts[0].content).toBe("/api/sessions/s/artifacts/canvas_images/b.png")
-    expect(store.activeArtifact?.content).toBe("/api/sessions/s/artifacts/canvas_images/b.png")
+    expect(store.artifacts[0].content).toBe(
+      "/api/sessions/s/artifacts/canvas_images/b.png?canvas_revision=m2%3Atool%3A0",
+    )
+    expect(store.activeArtifact?.content).toBe(
+      "/api/sessions/s/artifacts/canvas_images/b.png?canvas_revision=m2%3Atool%3A0",
+    )
   })
 })
 

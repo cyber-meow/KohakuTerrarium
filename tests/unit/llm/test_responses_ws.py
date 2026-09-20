@@ -1,5 +1,7 @@
 """Unit tests for ``llm/responses_ws.py`` incremental WebSocket sessions."""
 
+import asyncio
+
 import pytest
 
 from kohakuterrarium.llm.responses_ws import ResponsesWSError, ResponsesWSSession
@@ -264,3 +266,66 @@ class TestFailureRecovery:
         with pytest.raises(StopAsyncIteration):
             await gen.__anext__()
         assert not h.session.busy
+
+
+async def test_strict_echo_detects_assistant_edits_and_sends_only_verified_delta():
+    h = Harness()
+    h.conn.scripts = [[completed("r1")], [completed("r2")], [completed("r3")]]
+
+    async def run(items):
+        return [
+            event
+            async for event in h.session.stream_turn(
+                {"model": "m"},
+                items,
+                lambda values: values,
+                assistant_echo=lambda: [ASSIST1],
+            )
+        ]
+
+    await run([USER1])
+    await run([USER1, ASSIST1, USER2])
+    assert h.conn.sent[1]["input"] == [USER2]
+    assert h.conn.sent[1]["previous_response_id"] == "r1"
+    edited = {
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "edited"}],
+    }
+    await run([USER1, ASSIST1, USER2, edited, USER1])
+    assert "previous_response_id" not in h.conn.sent[2]
+    assert edited in h.conn.sent[2]["input"]
+
+
+async def test_cancelled_ws_turn_closes_connection_and_invalidates_state():
+    h = Harness()
+    entered = asyncio.Event()
+
+    async def wait_forever():
+        entered.set()
+        await asyncio.Event().wait()
+        yield text("unreachable")
+
+    class WaitingConnection(FakeConnection):
+        def __aiter__(self):
+            return wait_forever()
+
+    connection = WaitingConnection()
+    h.connections[0] = connection
+    task = asyncio.create_task(h.run([USER1]))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert connection.closed
+    assert h.session._prev_id is None
+
+
+@pytest.mark.parametrize("terminal", ["response.failed", "response.incomplete"])
+async def test_terminal_ws_failure_does_not_wait_for_another_event_or_retry(terminal):
+    h = Harness()
+    h.conn.scripts = [[Ev(type=terminal)]]
+    with pytest.raises(ResponsesWSError, match=terminal) as error_info:
+        await h.run([USER1])
+    assert error_info.value.mid_stream
+    assert len(h.conn.sent) == 1
+    assert h.session._prev_id is None

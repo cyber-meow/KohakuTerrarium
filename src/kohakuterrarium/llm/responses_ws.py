@@ -10,6 +10,7 @@ import asyncio
 from typing import Any, AsyncIterator, Callable
 
 from kohakuterrarium.utils.logging import get_logger
+from kohakuterrarium.llm.responses_http import _fingerprints
 
 logger = get_logger(__name__)
 
@@ -43,6 +44,8 @@ class ResponsesWSSession:
         self._prev_id: str | None = None
         self._sent_items: list[dict[str, Any]] = []
         self._last_call_ids: set[str] = set()
+        self._strict_known: tuple[bytes, ...] | None = None
+        self._assistant_echo: Callable[[], list[dict[str, Any]]] | None = None
 
     @property
     def busy(self) -> bool:
@@ -58,6 +61,7 @@ class ResponsesWSSession:
         self._prev_id = None
         self._sent_items = []
         self._last_call_ids = set()
+        self._strict_known = None
 
     async def close(self) -> None:
         """Close the connection and reset all state."""
@@ -76,6 +80,8 @@ class ResponsesWSSession:
         base_event: dict[str, Any],
         items: list[dict[str, Any]],
         pairing_fix: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+        *,
+        assistant_echo: Callable[[], list[dict[str, Any]]] | None = None,
     ) -> AsyncIterator[Any]:
         """Run one turn, yielding raw server events until ``response.completed``.
 
@@ -84,6 +90,7 @@ class ResponsesWSSession:
         resends (a delta must never gain synthetic outputs or drop orphans).
         """
         async with self._lock:
+            self._assistant_echo = assistant_echo
             delta = self._compute_delta(items)
             try:
                 async for event in self._run_turn(
@@ -91,6 +98,9 @@ class ResponsesWSSession:
                 ):
                     yield event
                 return
+            except (asyncio.CancelledError, GeneratorExit):
+                await self.close()
+                raise
             except ResponsesWSError as ws_exc:
                 if ws_exc.transport:
                     await self.close()
@@ -111,6 +121,9 @@ class ResponsesWSSession:
             try:
                 async for event in self._run_turn(base_event, items, pairing_fix, None):
                     yield event
+            except (asyncio.CancelledError, GeneratorExit):
+                await self.close()
+                raise
             except ResponsesWSError as retry_exc:
                 if retry_exc.transport:
                     await self.close()
@@ -153,6 +166,11 @@ class ResponsesWSSession:
                     str(exc), mid_stream=yielded, transport=True
                 ) from exc
             etype = getattr(server_event, "type", "")
+            if etype in {"response.failed", "response.incomplete"}:
+                self.invalidate()
+                raise ResponsesWSError(
+                    f"Responses turn ended with {etype}", mid_stream=True
+                )
             if etype == "error":
                 async for retry_event in self._handle_error_event(
                     server_event, base_event, items, pairing_fix, delta, yielded
@@ -197,6 +215,15 @@ class ResponsesWSSession:
         self, items: list[dict[str, Any]]
     ) -> list[dict[str, Any]] | None:
         """Return the not-yet-server-known suffix, or ``None`` for full resend."""
+        if self._strict_known is not None:
+            known = self._strict_known
+            if (
+                self._prev_id
+                and len(items) > len(known)
+                and _fingerprints(items[: len(known)]) == known
+            ):
+                return list(items[len(known) :])
+            return None
         sent = self._sent_items
         if not self._prev_id or len(items) <= len(sent):
             return None
@@ -229,6 +256,11 @@ class ResponsesWSSession:
             self.invalidate()
             return
         self._prev_id = response_id
+        if self._assistant_echo is not None:
+            self._strict_known = _fingerprints(items + self._assistant_echo())
+            self._sent_items = []
+            self._last_call_ids = set()
+            return
         self._sent_items = list(items)
         call_ids: set[str] = set()
         for output_item in getattr(response, "output", None) or []:

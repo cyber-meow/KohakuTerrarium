@@ -15,7 +15,10 @@ def to_responses_input(
     messages: list[dict[str, Any]], *, model: str = ""
 ) -> list[dict[str, Any]]:
     """Convert chat messages to Responses input with model-specific reasoning."""
-    replay_reasoning = model.lower().startswith(("deepseek-", "deepseek/"))
+    replay_reasoning = any(
+        component.startswith("deepseek-") or component == "deepseek"
+        for component in model.lower().split("/")
+    )
     items: list[dict[str, Any]] = []
     for msg in messages:
         role = msg.get("role")

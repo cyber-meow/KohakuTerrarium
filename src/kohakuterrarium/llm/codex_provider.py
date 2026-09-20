@@ -4,7 +4,6 @@ Provide Responses API access through Codex OAuth or an explicit API key.
 
 import asyncio
 import hashlib
-import json as _json
 from typing import Any, AsyncIterator
 
 import httpx
@@ -36,13 +35,19 @@ from kohakuterrarium.llm.codex_image_gen import (
     translate_image_gen_tool,
 )
 from kohakuterrarium.llm.codex_rate_limits import (
-    capture_from_headers,
+    capture_response_headers as _capture_rate_limit_headers,
     parse_rate_limit_event,
     UsageSnapshot,
     set_cached,
 )
 from kohakuterrarium.llm.openai_sanitize import strip_surrogates
 from kohakuterrarium.llm.responses_reasoning import ResponsesReasoningCollector
+from kohakuterrarium.llm.responses_http import (
+    ResponsesHTTPSession,
+    assistant_input,
+    wire_extra_body,
+    merged_reasoning,
+)
 from kohakuterrarium.llm.recovery import (
     ErrorClass,
     RetryPolicy,
@@ -55,19 +60,6 @@ from kohakuterrarium.utils.logging import get_logger
 logger = get_logger(__name__)
 
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
-
-
-async def _capture_rate_limit_headers(response: Any) -> None:
-    """Cache rate-limit headers without allowing telemetry failures to break requests."""
-    try:
-        snap = capture_from_headers(response.headers)
-        set_cached(snap)
-    except Exception as exc:  # pragma: no cover - response hooks must be isolated
-        logger.warning(
-            "Codex rate-limit header capture failed",
-            error=str(exc),
-            exc_info=True,
-        )
 
 
 class CodexOAuthProvider(BaseLLMProvider):
@@ -91,6 +83,7 @@ class CodexOAuthProvider(BaseLLMProvider):
         base_url: str | None = None,
         extra_body: dict[str, Any] | None = None,
         websocket_mode: bool | None = None,
+        http_continuation: bool | None = None,
     ):
         super().__init__(LLMConfig(model=model, retry_policy=retry_policy))
         self.model = model
@@ -106,6 +99,10 @@ class CodexOAuthProvider(BaseLLMProvider):
         if websocket_mode is None:
             websocket_mode = bool(self.extra_body.get("websocket_mode"))
         self._websocket_mode = bool(websocket_mode)
+        if http_continuation is None:
+            http_continuation = bool(self.extra_body.get("http_continuation"))
+        self._http_continuation = bool(http_continuation)
+        self._http_session = ResponsesHTTPSession()
         self._ws_session: ResponsesWSSession | None = None
         self._tokens: CodexTokens | None = None
         self._token_lock = asyncio.Lock()
@@ -245,6 +242,7 @@ class CodexOAuthProvider(BaseLLMProvider):
             base_url=self._base_url,
             extra_body=dict(self.extra_body),
             websocket_mode=self._websocket_mode,
+            http_continuation=self._http_continuation,
         )
         clone._tokens = self._tokens
         clone._token_lock = self._token_lock
@@ -284,6 +282,8 @@ class CodexOAuthProvider(BaseLLMProvider):
                     yield chunk
                 return
             except Exception as exc:
+                if emitted or self._last_tool_calls:
+                    raise
                 cls = classify_openai_error(exc)
                 if (
                     not auth_retry
@@ -352,7 +352,6 @@ class CodexOAuthProvider(BaseLLMProvider):
 
         api_input = to_responses_input(input_messages, model=self.model)
 
-        # Function tools precede provider-native tools in the outbound list.
         api_tools: list[dict[str, Any]] | None = None
         if tools:
             api_tools = [
@@ -365,7 +364,6 @@ class CodexOAuthProvider(BaseLLMProvider):
                 for t in tools
             ]
 
-        # The requested format determines the data URL media extension on output.
         self._image_gen_output_format: str = "png"
         if provider_native_tools:
             for native in provider_native_tools:
@@ -380,7 +378,6 @@ class CodexOAuthProvider(BaseLLMProvider):
             "Codex API request",
             model=self.model,
             input_items=len(api_input),
-            input_preview=_json.dumps(api_input, ensure_ascii=False)[:500],
         )
 
         extra_params: dict[str, Any] = {}
@@ -392,17 +389,26 @@ class CodexOAuthProvider(BaseLLMProvider):
         wire_extra = self._wire_extra_body()
 
         instr_text = instructions or "You are a helpful assistant."
-        # Stable routing improves prompt-cache reuse; the prompt hash is the fallback.
         cache_key = (
             self.prompt_cache_key
             or hashlib.sha256(instr_text.encode()).hexdigest()[:32]
         )
-        # Third-party Responses endpoints may reject Codex's internal session header.
         session_headers = {} if self._api_key else {"session_id": cache_key}
 
         collected_tool_calls: list[NativeToolCall] = []
 
+        response_text: list[str] = []
+
+        def assistant_echo() -> list[dict[str, Any]]:
+            return assistant_input(
+                self.model,
+                response_text,
+                self._reasoning.fields(),
+                collected_tool_calls,
+            )
+
         if self._websocket_mode:
+            self._http_session.invalidate()
             session = self._ws_session_for_turn(session_headers)
             if session is not None:
                 base_event: dict[str, Any] = {
@@ -417,10 +423,14 @@ class CodexOAuthProvider(BaseLLMProvider):
                     base_event["tools"] = api_tools
                 try:
                     async for event in session.stream_turn(
-                        base_event, api_input, fix_tool_call_pairing
+                        base_event,
+                        api_input,
+                        fix_tool_call_pairing,
+                        assistant_echo=assistant_echo,
                     ):
                         piece = self._process_stream_event(event, collected_tool_calls)
                         if piece is not None:
+                            response_text.append(piece)
                             yield piece
                     self._last_assistant_extra_fields = self._reasoning.fields()
                     self._last_tool_calls = collected_tool_calls
@@ -441,11 +451,26 @@ class CodexOAuthProvider(BaseLLMProvider):
         if wire_extra:
             extra_params["extra_body"] = wire_extra
 
-        try:
+        if self._http_continuation:
+            params = dict(
+                model=self.model,
+                instructions=instr_text,
+                tools=api_tools,
+                prompt_cache_key=cache_key,
+                **extra_params,
+            )
+            stream = self._http_session.stream_turn(
+                self._client.responses.create,
+                params,
+                api_input,
+                fix_tool_call_pairing,
+                assistant_echo,
+            )
+        else:
+            self._http_session.invalidate()
             stream = await self._client.responses.create(
                 model=self.model,
                 instructions=instr_text,
-                # Keep parallel calls together with their matching outputs.
                 input=fix_tool_call_pairing(api_input),
                 tools=api_tools,
                 store=False,
@@ -453,13 +478,11 @@ class CodexOAuthProvider(BaseLLMProvider):
                 prompt_cache_key=cache_key,
                 **extra_params,
             )
-        except Exception as e:
-            logger.error("Codex API request failed", error=str(e))
-            raise
 
         async for event in stream:
             piece = self._process_stream_event(event, collected_tool_calls)
             if piece is not None:
+                response_text.append(piece)
                 yield piece
 
         self._last_assistant_extra_fields = self._reasoning.fields()
@@ -481,21 +504,11 @@ class CodexOAuthProvider(BaseLLMProvider):
 
     def _merged_reasoning(self) -> dict[str, Any]:
         """Combine the effort field with reasoning overrides from extra_body."""
-        reasoning: dict[str, Any] = {}
-        if self.reasoning_effort and self.reasoning_effort != "none":
-            reasoning["effort"] = self.reasoning_effort
-        override = self.extra_body.get("reasoning")
-        if isinstance(override, dict):
-            reasoning.update(override)
-        return reasoning
+        return merged_reasoning(self.reasoning_effort, self.extra_body)
 
     def _wire_extra_body(self) -> dict[str, Any]:
         """Return extra_body wire fields (framework knobs and reasoning removed)."""
-        return {
-            k: v
-            for k, v in self.extra_body.items()
-            if k not in ("reasoning", "websocket_mode", "disable_prompt_caching")
-        }
+        return wire_extra_body(self.extra_body)
 
     def _ws_session_for_turn(
         self, session_headers: dict[str, str]
@@ -536,6 +549,7 @@ class CodexOAuthProvider(BaseLLMProvider):
                 if itype == "function_call":
                     call_id = getattr(item, "call_id", "")
                     self._reasoning.consume_function_call(call_id)
+                    self._last_tool_calls = collected_tool_calls
                     collected_tool_calls.append(
                         NativeToolCall(
                             id=call_id,
@@ -579,6 +593,7 @@ class CodexOAuthProvider(BaseLLMProvider):
     async def close(self) -> None:
         """Close the WebSocket session and the underlying SDK client."""
         await self._reset_ws_session()
+        self._http_session.invalidate()
         if self._client:
             await self._client.close()
         self._client = None

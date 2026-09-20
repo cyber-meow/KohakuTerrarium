@@ -8,6 +8,20 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from kohakuterrarium.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+async def capture_response_headers(response: Any) -> None:
+    """Cache rate-limit headers while isolating telemetry failures."""
+    try:
+        set_cached(capture_from_headers(response.headers))
+    except Exception as exc:
+        logger.warning(
+            "Codex rate-limit header capture failed", error=str(exc), exc_info=True
+        )
+
 
 @dataclass
 class RateLimitWindow:

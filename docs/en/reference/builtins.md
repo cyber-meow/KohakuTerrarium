@@ -422,13 +422,21 @@ Naming convention (post-2026-04 refactor):
 Routed through the native Anthropic-compatible Messages API. Effort via
 `extra_body.output_config.effort`.
 
-- `claude-opus-4.7` (aliases: `claude-opus`, `opus`)
+- `claude-opus-5.5` (aliases: `claude-opus`, `opus`)
+- `claude-opus-4.8`
+- `claude-opus-4.7`
 - `claude-opus-4.6` (legacy alias: `claude-opus-4.6-direct`)
 - `claude-sonnet-4.6` (aliases: `claude`, `claude-sonnet`, `sonnet`; legacy: `claude-sonnet-4.6-direct`)
 - `claude-haiku-4.5` (aliases: `claude-haiku`, `haiku`; legacy: `claude-haiku-4.5-direct`)
 
+Opus 5.5 uses a 1M context window, up to 128K output tokens, and always-on
+adaptive thinking with medium effort by default. Use
+`anthropic/claude-opus-5.5@reasoning=xhigh` to select higher effort.
+
 ### Anthropic Claude via OpenRouter (`-or` suffix)
 
+- `claude-opus-5.5-or`
+- `claude-opus-4.8-or`
 - `claude-opus-4.7-or`
 - `claude-opus-4.6-or`
 - `claude-sonnet-4.6-or`
@@ -581,7 +589,7 @@ Patches `extra_body.output_config.effort` via the compat layer.
 
 | Preset | Group | Options |
 |---|---|---|
-| `claude-opus-4.7` | `reasoning` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `claude-opus-5.5`, `claude-opus-4.8`, `claude-opus-4.7` | `reasoning` | `low`, `medium`, `high`, `xhigh`, `max` |
 | `claude-opus-4.6`, `claude-sonnet-4.6` | `reasoning` | `low`, `medium`, `high`, `max` |
 
 Haiku 4.5 uses the older extended-thinking (`budget_tokens`) and has
@@ -589,12 +597,11 @@ no variation group.
 
 ### Anthropic: OpenRouter (`-or` suffix)
 
-Patches `extra_body.reasoning.effort`. `xhigh` is only honoured by
-Opus 4.7.
+Patches `extra_body.reasoning.effort`. Opus 4.7 and newer support `xhigh`.
 
 | Preset | Group | Options |
 |---|---|---|
-| `claude-opus-4.7-or` | `reasoning` | `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `claude-opus-5.5-or`, `claude-opus-4.8-or`, `claude-opus-4.7-or` | `reasoning` | `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `claude-opus-4.6-or`, `claude-sonnet-4.6-or`, `claude-sonnet-4.5-or`, `claude-opus-4-or`, `claude-sonnet-4-or` | `reasoning` | `minimal`, `low`, `medium`, `high` |
 | `claude-haiku-4.5-or` | `reasoning` | `off`, `low`, `medium`, `high` |
 

@@ -94,6 +94,7 @@ from kohakuterrarium.llm.profiles import (
     delete_backend,
     delete_profile,
     get_api_key,
+    get_default_model,
     get_preset,
     get_profile,
     list_all,
@@ -707,6 +708,46 @@ class TestLlmIntegration:
         assert claude_profile.backend_type == "anthropic"
         assert claude_profile.base_url == "https://api.anthropic.com"
         assert claude_profile.model == "claude-opus-4-7"
+
+        # Opus 5.5 must reach both providers through the public selectors.
+        for selector, provider, model, effort_field in (
+            ("opus", "anthropic", "claude-opus-5-5", "output_config"),
+            ("claude-opus", "anthropic", "claude-opus-5-5", "output_config"),
+            (
+                "openrouter/claude-opus-5.5",
+                "openrouter",
+                "anthropic/claude-opus-5.5",
+                "reasoning",
+            ),
+            (
+                "claude-opus-5.5-or",
+                "openrouter",
+                "anthropic/claude-opus-5.5",
+                "reasoning",
+            ),
+        ):
+            profile = resolve_controller_llm({}, llm=selector)
+            assert profile is not None
+            assert (profile.provider, profile.model) == (provider, model)
+            assert (profile.max_context, profile.max_output) == (1_000_000, 128_000)
+            assert profile.extra_body[effort_field]["effort"] == "medium"
+            selected = resolve_controller_llm({}, llm=f"{selector}@reasoning=xhigh")
+            assert selected.extra_body[effort_field]["effort"] == "xhigh"
+            # Selecting effort must not mutate subsequent resolutions.
+            assert resolve_controller_llm({}, llm=selector) == profile
+            with pytest.raises(ValueError):
+                resolve_controller_llm({}, llm=f"{selector}@reasoning=off")
+
+        # Defaults and catalog entries resolve through the same preset registry.
+        ak.save_api_key("anthropic", "synthetic-opus-test-key")
+        assert get_default_model() == "anthropic/claude-opus-5.5"
+        catalog = {(entry["provider"], entry["name"]): entry for entry in list_all()}
+        for provider in ("anthropic", "openrouter"):
+            assert catalog[(provider, "claude-opus-5.5")]["max_output"] == 128_000
+        assert get_profile("anthropic/claude-opus-4.8").model == "claude-opus-4-8"
+        assert get_profile("claude-opus-4.8-or").model == "anthropic/claude-opus-4.8"
+        set_default_model("anthropic/claude-opus-4.8")
+        assert get_default_model() == "anthropic/claude-opus-4.8"
 
         # 6. backend_type normalization + validation — the exact rules
         #    ``save_backend`` enforces on every write.

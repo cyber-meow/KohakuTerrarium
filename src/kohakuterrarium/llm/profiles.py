@@ -162,7 +162,7 @@ def load_profiles() -> dict[tuple[str, str], LLMProfile]:
 _PROVIDER_DEFAULT_MODELS: list[tuple[str, str]] = [
     ("codex", "gpt-6-astra"),
     ("openrouter", "mimo-v2.5-pro"),
-    ("anthropic", "claude-opus-4.8"),
+    ("anthropic", "claude-opus-5.5"),
     ("openai", "gpt-5.6-sol"),
     ("gemini", "gemini-3.1-pro"),
     ("mimo", "mimo-v2.5-pro"),

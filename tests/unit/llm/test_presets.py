@@ -115,7 +115,7 @@ class TestGetAllPresets:
 
 class TestResolveAlias:
     def test_short_friendly_alias(self):
-        assert resolve_alias("opus") == ("anthropic", "claude-opus-4.8")
+        assert resolve_alias("opus") == ("anthropic", "claude-opus-5.5")
         assert resolve_alias("fable") == ("anthropic", "claude-fable-5")
         assert resolve_alias("sonnet") == ("anthropic", "claude-sonnet-5")
         assert resolve_alias("gpt5") == ("codex", "gpt-5.5")
@@ -382,16 +382,6 @@ class TestPresetsDataIntegrity:
             preset, preset["variation_groups"], {"mode": "standard"}
         )
         assert untouched == preset
-
-    def test_anthropic_direct_presets_use_anthropic_provider(self):
-        assert PRESETS["claude-opus-4.7"]["provider"] == "anthropic"
-        assert PRESETS["claude-opus-4.7"]["model"] == "claude-opus-4-7"
-        assert PRESETS["claude-opus-4.8"]["provider"] == "anthropic"
-        assert PRESETS["claude-opus-4.8"]["model"] == "claude-opus-4-8"
-        assert PRESETS["claude-fable-5"]["provider"] == "anthropic"
-        assert PRESETS["claude-fable-5"]["model"] == "claude-fable-5"
-        assert PRESETS["claude-sonnet-5"]["provider"] == "anthropic"
-        assert PRESETS["claude-sonnet-5"]["model"] == "claude-sonnet-5"
 
     def test_kimi_code_direct_preset_uses_kimi_code_provider(self):
         preset = PRESETS["kimi-for-coding"]

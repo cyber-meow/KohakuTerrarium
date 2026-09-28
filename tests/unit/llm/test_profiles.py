@@ -147,11 +147,11 @@ class TestGetProfile:
             get_profile("gpt-5.4")
 
     def test_alias_resolves(self):
-        # 'opus' alias -> (anthropic, claude-opus-4.8)
+        # 'opus' alias -> (anthropic, claude-opus-5.5)
         profile = get_profile("opus")
         assert profile is not None
         assert profile.provider == "anthropic"
-        assert profile.model == "claude-opus-4-8"
+        assert profile.model == "claude-opus-5-5"
 
     def test_unknown_name_returns_none(self):
         assert get_profile("totally-made-up-model") is None

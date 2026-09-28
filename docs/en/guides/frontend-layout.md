@@ -65,6 +65,17 @@ The panel picker and the palette list each panel with a one-line
 description; the two legacy aliases (`file-tree`, `editor-status`) are
 resolvable by the legacy presets but are never offered.
 
+## Collapsing panels
+
+Use the arrow buttons in a divider to collapse either side of the split.
+The remaining panel fills the available space; the arrow at its edge restores
+the hidden side to its previous size. This works for left/right and top/bottom
+splits, including nested splits in custom layouts.
+
+Hidden panels keep their drafts and running terminal state. Collapse applies
+only to the current workspace view and is not saved into the preset. Switching
+layouts, reloading the page, or entering layout edit mode reveals the panels.
+
 ## Edit mode
 
 Press **Ctrl+Shift+L** or click the edit button in the header to enter

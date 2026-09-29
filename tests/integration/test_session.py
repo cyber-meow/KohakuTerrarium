@@ -58,6 +58,7 @@ from kohakuterrarium.session.migrations import (
     path_for_version,
 )
 from kohakuterrarium.session.readonly import read_session_meta
+from kohakuterrarium.session.readonly_view import SessionReadView
 from kohakuterrarium.session.raw_history import UserMessageSelector
 from kohakuterrarium.session.resume import detect_session_type, resume_agent
 from kohakuterrarium.session.resume_async import resume_agent_async
@@ -199,7 +200,19 @@ class TestSessionIntegration:
         await agent.start()
         try:
             await agent._process_event(create_user_input_event("introduce yourself"))
-            await agent._process_event(create_user_input_event("use the echo tool"))
+            store.flush()
+            with SessionReadView(session_path) as reader:
+                before = list(reader.items("events", prefix="scribe:e"))
+                await agent._process_event(create_user_input_event("use the echo tool"))
+                store.flush()
+                assert list(reader.items("events", prefix="scribe:e")) == before
+            with SessionReadView(session_path) as reader:
+                inputs = [
+                    event["content"]
+                    for _, event in reader.items("events", prefix="scribe:e")
+                    if event.get("type") == "user_input"
+                ]
+                assert inputs == ["introduce yourself", "use the echo tool"]
             # Drive the SessionOutput activity surface the runtime uses:
             # notify_activity → on_activity_with_metadata → _record_activity
             # dispatch table. Each call must land as a typed event row.

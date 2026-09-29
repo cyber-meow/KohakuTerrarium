@@ -67,6 +67,32 @@ describe("instances.fetchAll — SessionListing payload shape", () => {
 })
 
 describe("instances store", () => {
+  it("does not restore pre-removal details or lists after topology refresh", async () => {
+    const store = useInstancesStore()
+    store._syncHostScope()
+    store.list = [{ id: "team", creatures: [{ creature_id: "removed" }] }]
+    store.current = store.list[0]
+    const staleList = promiseWithResolvers()
+    const staleDetail = promiseWithResolvers()
+    sessionAPI.listActive.mockReturnValueOnce(staleList.promise)
+    sessionAPI.getActive.mockReturnValueOnce(staleDetail.promise)
+    const listing = store.fetchAll()
+    const detail = store.fetchOne("team")
+    sessionAPI.listActive.mockResolvedValueOnce([{ session_id: "team", creatures: 1 }])
+    sessionAPI.getActive.mockResolvedValueOnce({
+      session_id: "team",
+      creatures: [{ creature_id: "peer" }],
+    })
+    await store.refreshTopology()
+    staleList.resolve([{ session_id: "team", creatures: 2 }])
+    staleDetail.resolve({
+      session_id: "team",
+      creatures: [{ creature_id: "removed" }, { creature_id: "peer" }],
+    })
+    await Promise.all([listing, detail])
+    expect(store.list[0].creatures.map((creature) => creature.creature_id)).toEqual(["peer"])
+    expect(store.current.creatures.map((creature) => creature.creature_id)).toEqual(["peer"])
+  })
   it("invalidates a pre-stop list request and removes the stopped runtime immediately", async () => {
     const store = useInstancesStore()
     const deferred = promiseWithResolvers()

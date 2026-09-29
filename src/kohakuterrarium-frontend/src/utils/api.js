@@ -797,6 +797,13 @@ export const sessionAPI = {
     await api.delete(`/sessions/active/${encodeTarget(id)}`)
   },
 
+  async removeCreature(sessionId, creatureId) {
+    const { data } = await api.delete(
+      `/sessions/active/${encodeTarget(sessionId)}/creatures/${encodeTarget(creatureId)}`,
+    )
+    return data
+  },
+
   async endConversation(conversationId) {
     const { data } = await api.post(`/sessions/open/${encodeTarget(conversationId)}/end`)
     return data

@@ -13,7 +13,8 @@ import {
   Z_BANDS,
   normalizeSnapshot,
 } from "@/stores/runtimeGraphModel"
-import { stopRuntime } from "@/stores/runtimeLifecycle"
+import { removeRuntimeCreature, stopRuntime } from "@/stores/runtimeLifecycle"
+import { getRuntimeScope } from "@/stores/runtimeScope"
 import { runtimeGraphAPI, terrariumAPI, wiringAPI } from "@/utils/api"
 import { getHybridPrefSync, setHybridPref } from "@/utils/uiPrefs"
 import { wsUrl } from "@/utils/wsUrl"
@@ -58,6 +59,7 @@ export const useRuntimeGraphStore = defineStore("runtimeGraph", () => {
     // any backend graph. They render as free channel cards and only
     // become real engine channels once a creature is wired to them.
     freeChannels: [],
+    closingNodes: {},
     _layout: readLayout(),
     _pollInterval: null,
     _ws: null,
@@ -602,6 +604,52 @@ export const useRuntimeGraphStore = defineStore("runtimeGraph", () => {
     pushLog("splitting a creature out of its molecule requires removing every wire that ties it in")
   }
 
+  async function closeNode(id, { expectedScope = getRuntimeScope() } = {}) {
+    if (expectedScope !== getRuntimeScope())
+      throw new Error("Runtime host changed before closing agent")
+    const node = nodeById.value[id]
+    if (node?.kind !== "creature" || !node.graphId) return
+    if (state.closingNodes[id] === expectedScope) return
+    state.closingNodes[id] = expectedScope
+    state.error = ""
+    let removed = false
+    try {
+      const before = await runtimeGraphAPI.snapshot()
+      if (expectedScope !== getRuntimeScope())
+        throw new Error("Runtime host changed before closing agent")
+      const graph = (before.graphs || []).find((candidate) =>
+        (candidate.creatures || []).some(
+          (creature) => (creature.creature_id || creature.agent_id) === id,
+        ),
+      )
+      if (!graph) {
+        applySnapshot(before)
+        if (state.selection.kind === "node" && state.selection.id === id) clearSelection()
+        return
+      }
+      if (graph.creatures.length === 1) await stopRuntime(graph.graph_id)
+      else await removeRuntimeCreature(graph.graph_id, id)
+      removed = true
+      if (expectedScope !== getRuntimeScope())
+        throw new Error("Runtime host changed while closing agent")
+      const snapshot = await runtimeGraphAPI.snapshot()
+      if (expectedScope !== getRuntimeScope())
+        throw new Error("Runtime host changed while refreshing agents")
+      applySnapshot(snapshot)
+      if (state.selection.kind === "node" && !nodeById.value[state.selection.id]) clearSelection()
+      pushLog(`closed agent ${node.label} · saved history retained`)
+    } catch (error) {
+      if (expectedScope === getRuntimeScope()) {
+        const detail = error?.response?.data?.detail || error?.message || String(error)
+        state.error = removed ? `Agent closed; graph refresh failed: ${detail}` : detail
+        pushLog(state.error)
+      }
+      throw error
+    } finally {
+      if (state.closingNodes[id] === expectedScope) delete state.closingNodes[id]
+    }
+  }
+
   async function dissolveGroup(groupId) {
     if (!groupId) return
     try {
@@ -647,6 +695,7 @@ export const useRuntimeGraphStore = defineStore("runtimeGraph", () => {
     moveGroup,
     setRouteOffset,
     removeNodeFromGroup,
+    closeNode,
     joinGroup,
     dissolveGroup,
     connect,

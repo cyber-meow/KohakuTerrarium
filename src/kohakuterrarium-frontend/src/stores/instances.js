@@ -110,6 +110,35 @@ export const useInstancesStore = defineStore("instances", {
       return task
     },
 
+    async refreshTopology() {
+      const scope = this._syncHostScope()
+      const generation = ++this._fetchSeq
+      this._inflightFetch = null
+      this._inflightOne = {}
+      const ownsRefresh = () => scope === this._syncHostScope() && generation === this._fetchSeq
+      this.loading = true
+      try {
+        const sessions = await sessionAPI.listActive()
+        if (!ownsRefresh()) return
+        const details = await Promise.all(
+          sessions.map(async ({ session_id: id }) => {
+            try {
+              return await sessionAPI.getActive(id)
+            } catch (error) {
+              if (error?.response?.status === 404) return null
+              throw error
+            }
+          }),
+        )
+        if (!ownsRefresh()) return
+        const selected = this.current?.id
+        this.list = details.filter(Boolean).map(_mapSession)
+        this.current = this.list.find((item) => item.id === selected) || null
+      } finally {
+        if (ownsRefresh()) this.loading = false
+      }
+    },
+
     async _fetchOneNow(id, request) {
       this.loading = true
       const scope = this._hostScope

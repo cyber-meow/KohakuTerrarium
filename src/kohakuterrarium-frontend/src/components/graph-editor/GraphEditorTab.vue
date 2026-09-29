@@ -96,6 +96,7 @@
 
       <!-- Radial menu -->
       <RuntimeInlineMenu :open="menu.open" :x="menu.x" :y="menu.y" :center-label="menu.label" :items="menu.items" @pick="onMenuPick" @close="closeMenu" />
+      <ConfirmCloseAgentDialog v-if="closeTarget" :name="closeTarget.label" :closing="state.closingNodes[closeTarget.id] === closeTarget.scope" :error="state.error" @close="closeTarget = null" @confirm="closeAgent(closeTarget.id, closeTarget.scope)" />
 
       <!-- Creation modals — same components used by the quick-rail
            "New creature / terrarium" buttons. ``silent`` keeps the
@@ -140,6 +141,7 @@ import { storeToRefs } from "pinia"
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue"
 
 import NewCreatureModal from "@/components/shell/modals/NewCreatureModal.vue"
+import ConfirmCloseAgentDialog from "@/components/graph-editor/ConfirmCloseAgentDialog.vue"
 import NewTerrariumModal from "@/components/shell/modals/NewTerrariumModal.vue"
 import RuntimeCanvasStage from "@/components/graph-editor/RuntimeCanvasStage.vue"
 import RuntimeConnection from "@/components/graph-editor/RuntimeConnection.vue"
@@ -150,6 +152,7 @@ import NameInputModal from "@/components/graph-editor/NameInputModal.vue"
 import { useDensity } from "@/composables/useDensity"
 import { FREE_STACK, NODE_HEIGHT, NODE_WIDTH, Z_BANDS, useRuntimeGraphStore } from "@/stores/runtimeGraph"
 import { useTabsStore } from "@/stores/tabs"
+import { getRuntimeScope } from "@/stores/runtimeScope"
 import { agentAPI, terrariumAPI } from "@/utils/api"
 import { randomNameFor } from "@/utils/randomName"
 
@@ -171,6 +174,7 @@ function onAddPick(kind) {
 // Modal mount points — reused from the v2 quick-rail flow so we don't
 // duplicate the creature/terrarium creation form here.
 const activeModal = ref(null)
+const closeTarget = ref(null)
 
 // State for the channel-name input modal (shared with future rename
 // flows). ``onSubmit`` resolves a Promise the caller awaited, so the
@@ -407,11 +411,13 @@ function onBackgroundMousedown() {
 }
 
 // Radial menu -----------------------------------------------------
-const menu = reactive({ open: false, x: 0, y: 0, label: "", nodeId: null, items: [] })
+const menu = reactive({ open: false, x: 0, y: 0, label: "", nodeId: null, items: [], scope: null })
 
 function openNodeMenu(nodeId, e) {
   selectNode(nodeId)
   const n = nodeById.value[nodeId]
+  if (!n) return
+  menu.scope = getRuntimeScope()
   menu.nodeId = nodeId
   menu.open = true
   menu.x = e.clientX
@@ -439,6 +445,16 @@ function openNodeMenu(nodeId, e) {
     },
     { id: "rename", label: "Rename", icon: "i-carbon-edit" },
     { id: "duplicate", label: "Duplicate", icon: "i-carbon-copy" },
+    ...(n.kind === "creature" && n.graphId
+      ? [
+          {
+            id: "close-agent",
+            label: "Close agent",
+            icon: "i-carbon-close",
+            disabled: state.closingNodes[n.id] === menu.scope,
+          },
+        ]
+      : []),
   ]
 }
 function closeMenu() {
@@ -449,6 +465,7 @@ async function onMenuPick(action) {
   const id = menu.nodeId
   if (!id) return
   const n = nodeById.value[id]
+  if (!n) return
   switch (action) {
     case "open-chat":
       await openChatForNode(n)
@@ -463,6 +480,19 @@ async function onMenuPick(action) {
     case "duplicate":
       duplicateNode(id)
       break
+    case "close-agent":
+      if (n.status === "running") closeTarget.value = { id: n.id, label: n.label, scope: menu.scope }
+      else await closeAgent(n.id, menu.scope)
+      break
+  }
+}
+
+async function closeAgent(id, scope) {
+  try {
+    await editor.closeNode(id, { expectedScope: scope })
+    if (closeTarget.value?.id === id) closeTarget.value = null
+  } catch (error) {
+    if (scope === getRuntimeScope() && !state.error) state.error = error?.response?.data?.detail || error?.message || String(error)
   }
 }
 

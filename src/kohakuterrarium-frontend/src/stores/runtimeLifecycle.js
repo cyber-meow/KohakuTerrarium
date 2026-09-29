@@ -17,3 +17,25 @@ export async function stopRuntime(runtimeId) {
   useInstancesStore().markRuntimeStopped(runtimeId)
   void conversations.fetchAll({ force: true })
 }
+
+export async function removeRuntimeCreature(runtimeId, creatureId) {
+  const scope = getRuntimeScope()
+  const result = await sessionAPI.removeCreature(runtimeId, creatureId)
+  if (scope !== getRuntimeScope()) {
+    throw new Error("Runtime host changed while closing agent")
+  }
+  try {
+    await Promise.all([
+      useInstancesStore().refreshTopology(),
+      useConversationsStore().fetchAll({ force: true }),
+    ])
+  } catch (error) {
+    throw new Error(
+      `Agent closed, but refreshing the runtime list failed: ${error?.message || error}`,
+    )
+  }
+  if (scope !== getRuntimeScope()) {
+    throw new Error("Runtime host changed while closing agent")
+  }
+  return result
+}

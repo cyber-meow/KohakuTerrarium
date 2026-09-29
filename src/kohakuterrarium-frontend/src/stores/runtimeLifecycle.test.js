@@ -5,6 +5,9 @@ vi.mock("@/utils/api", () => ({
   sessionAPI: {
     listOpen: vi.fn(),
     stopActive: vi.fn(),
+    removeCreature: vi.fn(),
+    listActive: vi.fn(),
+    getActive: vi.fn(),
   },
 }))
 
@@ -12,7 +15,7 @@ import { useAuthStore } from "./auth"
 import { useConversationsStore } from "./conversations"
 import { useHostsStore } from "./hosts"
 import { useInstancesStore } from "./instances"
-import { stopRuntime } from "./runtimeLifecycle"
+import { removeRuntimeCreature, stopRuntime } from "./runtimeLifecycle"
 import { sessionAPI } from "@/utils/api"
 
 beforeEach(() => {
@@ -20,10 +23,56 @@ beforeEach(() => {
   vi.clearAllMocks()
   sessionAPI.listOpen.mockResolvedValue([])
   sessionAPI.stopActive.mockResolvedValue()
+  sessionAPI.removeCreature.mockResolvedValue({ removed: true })
+  sessionAPI.listActive.mockResolvedValue([])
   useAuthStore().sameOriginUser = null
 })
 
 describe("runtime lifecycle", () => {
+  it("refreshes split runtimes and the conversation rail after removing one creature", async () => {
+    const instances = useInstancesStore()
+    instances._syncHostScope()
+    instances.current = { id: "runtime-one", creatures: [{ creature_id: "removed" }] }
+    instances.list = [instances.current]
+    sessionAPI.listActive.mockResolvedValue([
+      { session_id: "runtime-one", creatures: 1 },
+      { session_id: "split-runtime", creatures: 1 },
+    ])
+    sessionAPI.getActive.mockImplementation(async (id) => ({
+      session_id: id,
+      creatures: [{ creature_id: id === "runtime-one" ? "peer-a" : "peer-b" }],
+    }))
+    await removeRuntimeCreature("runtime-one", "removed")
+    expect(sessionAPI.removeCreature).toHaveBeenCalledWith("runtime-one", "removed")
+    expect(sessionAPI.stopActive).not.toHaveBeenCalled()
+    expect(instances.list.map((row) => row.creatures[0].creature_id)).toEqual(["peer-a", "peer-b"])
+    expect(instances.current.id).toBe("runtime-one")
+    expect(sessionAPI.listOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps peers untouched on a rejected individual removal", async () => {
+    const instances = useInstancesStore()
+    instances.list = [{ id: "runtime-one", creatures: ["a", "b"] }]
+    sessionAPI.removeCreature.mockRejectedValueOnce(new Error("permission denied"))
+    await expect(removeRuntimeCreature("runtime-one", "a")).rejects.toThrow("permission denied")
+    expect(instances.list).toEqual([{ id: "runtime-one", creatures: ["a", "b"] }])
+    expect(sessionAPI.listActive).not.toHaveBeenCalled()
+    expect(sessionAPI.listOpen).not.toHaveBeenCalled()
+  })
+
+  it("does not refresh a different host after an individual removal completes", async () => {
+    const hosts = useHostsStore()
+    hosts.hosts = [hostRecord("host-a"), hostRecord("host-b")]
+    hosts.activeHostId = "host-a"
+    const request = promiseWithResolvers()
+    sessionAPI.removeCreature.mockReturnValueOnce(request.promise)
+    const removing = removeRuntimeCreature("same-id", "a")
+    hosts.activeHostId = "host-b"
+    request.resolve({ removed: true })
+    await expect(removing).rejects.toThrow("host changed")
+    expect(sessionAPI.listActive).not.toHaveBeenCalled()
+    expect(sessionAPI.listOpen).not.toHaveBeenCalled()
+  })
   it("removes a stopped runtime from both live stores in the same scope", async () => {
     const instances = useInstancesStore()
     const conversations = useConversationsStore()

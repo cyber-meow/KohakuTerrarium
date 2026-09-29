@@ -22,6 +22,7 @@ vi.mock("@/utils/wsUrl", () => ({
 
 vi.mock("@/stores/runtimeLifecycle", () => ({
   stopRuntime: vi.fn(),
+  removeRuntimeCreature: vi.fn(),
 }))
 
 vi.mock("@/utils/api", () => ({
@@ -46,9 +47,10 @@ vi.mock("@/utils/api", () => ({
   },
 }))
 
-import { stopRuntime } from "./runtimeLifecycle"
+import { removeRuntimeCreature, stopRuntime } from "./runtimeLifecycle"
 import { runtimeGraphAPI, terrariumAPI, wiringAPI } from "@/utils/api"
 import { useRuntimeGraphStore } from "./runtimeGraph"
+import { useAuthStore } from "./auth"
 
 const snapshot = {
   version: 1,
@@ -102,10 +104,117 @@ beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
   globalThis.WebSocket = FakeWebSocket
-  runtimeGraphAPI.snapshot.mockResolvedValue(snapshot)
+  runtimeGraphAPI.snapshot.mockReset().mockResolvedValue(snapshot)
+  stopRuntime.mockReset()
+  removeRuntimeCreature.mockReset()
+  useAuthStore().sameOriginUser = null
 })
 
 describe("runtime graph store", () => {
+  it("closes one creature and applies the authoritative split topology", async () => {
+    const store = useRuntimeGraphStore()
+    await store.loadSnapshot()
+    store.selectNode("alice")
+    const after = {
+      graphs: [
+        {
+          graph_id: "split-peer",
+          creatures: [{ ...snapshot.graphs[0].creatures[1], listen_channels: [] }],
+          channels: [],
+        },
+      ],
+    }
+    runtimeGraphAPI.snapshot.mockResolvedValueOnce(snapshot).mockResolvedValueOnce(after)
+    removeRuntimeCreature.mockResolvedValueOnce({ removed: true })
+    await store.closeNode("alice")
+    expect(removeRuntimeCreature).toHaveBeenCalledWith("graph_1", "alice")
+    expect(stopRuntime).not.toHaveBeenCalled()
+    expect(store.state.nodes.map((node) => node.id)).toEqual(["bob"])
+    expect(store.nodeById.bob.graphId).toBe("split-peer")
+    expect(store.state.connections).toEqual([])
+    expect(store.state.selection.id).toBeNull()
+  })
+
+  it("uses the full runtime stop path for the last creature, including hidden solo groups", async () => {
+    const store = useRuntimeGraphStore()
+    store.applySnapshot({
+      graphs: [{ graph_id: "solo", creatures: [snapshot.graphs[0].creatures[0]] }],
+    })
+    expect(store.state.groups).toHaveLength(0)
+    runtimeGraphAPI.snapshot
+      .mockResolvedValueOnce(store.state.rawSnapshot)
+      .mockResolvedValueOnce({ graphs: [] })
+    stopRuntime.mockResolvedValueOnce()
+    await store.closeNode("alice")
+    expect(stopRuntime).toHaveBeenCalledWith("solo")
+    expect(removeRuntimeCreature).not.toHaveBeenCalled()
+    expect(store.state.nodes).toEqual([])
+  })
+
+  it("retains the node and shows the backend detail when removal fails", async () => {
+    const store = useRuntimeGraphStore()
+    await store.loadSnapshot()
+    removeRuntimeCreature.mockRejectedValueOnce({
+      response: { data: { detail: "cannot close agent" } },
+    })
+    await expect(store.closeNode("alice")).rejects.toBeTruthy()
+    expect(store.nodeById.alice).toBeDefined()
+    expect(store.nodeById.bob).toBeDefined()
+    expect(store.state.error).toContain("cannot close agent")
+    expect(runtimeGraphAPI.snapshot).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not stop a whole runtime when a peer joined after the cached singleton snapshot", async () => {
+    const store = useRuntimeGraphStore()
+    store.applySnapshot({
+      graphs: [{ graph_id: "graph_1", creatures: [snapshot.graphs[0].creatures[0]] }],
+    })
+    runtimeGraphAPI.snapshot.mockResolvedValueOnce(snapshot).mockResolvedValueOnce({ graphs: [] })
+    removeRuntimeCreature.mockResolvedValueOnce({ removed: true })
+    await store.closeNode("alice")
+    expect(removeRuntimeCreature).toHaveBeenCalledWith("graph_1", "alice")
+    expect(stopRuntime).not.toHaveBeenCalled()
+  })
+
+  it("rejects a changed user scope before sending any close request", async () => {
+    const store = useRuntimeGraphStore()
+    await store.loadSnapshot()
+    let resolve
+    runtimeGraphAPI.snapshot.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      }),
+    )
+    const closing = store.closeNode("alice")
+    useAuthStore().sameOriginUser = { id: "different-user" }
+    resolve(snapshot)
+    await expect(closing).rejects.toThrow("host changed")
+    expect(removeRuntimeCreature).not.toHaveBeenCalled()
+    expect(stopRuntime).not.toHaveBeenCalled()
+    expect(store.state.error).toBe("")
+  })
+
+  it("does not overwrite a new user graph with an old close refresh", async () => {
+    const store = useRuntimeGraphStore()
+    await store.loadSnapshot()
+    let resolve
+    runtimeGraphAPI.snapshot.mockResolvedValueOnce(snapshot).mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      }),
+    )
+    removeRuntimeCreature.mockResolvedValueOnce({ removed: true })
+    const closing = store.closeNode("alice")
+    await vi.waitFor(() => expect(resolve).toBeTypeOf("function"))
+    useAuthStore().sameOriginUser = { id: "different-user" }
+    store.applySnapshot({
+      graphs: [{ graph_id: "new-user", creatures: [{ creature_id: "new-peer" }] }],
+    })
+    resolve({ graphs: [] })
+    await expect(closing).rejects.toThrow("host changed")
+    expect(store.state.nodes.map((node) => node.id)).toEqual(["new-peer"])
+    expect(store.state.error).toBe("")
+  })
   it("routes graph dissolution through the shared instance stop action", async () => {
     const store = useRuntimeGraphStore()
     stopRuntime.mockResolvedValue()

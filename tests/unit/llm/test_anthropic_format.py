@@ -91,6 +91,42 @@ class TestAnthropicTools:
 
 
 class TestPrepareMessages:
+    @pytest.mark.parametrize("url_as_string", [False, True])
+    @pytest.mark.parametrize("include_text", [False, True])
+    def test_tool_images_reach_nested_anthropic_result(
+        self, url_as_string, include_text
+    ):
+        url = "https://example.invalid/synthetic.png"
+        image = {
+            "type": "image_url",
+            "image_url": url if url_as_string else {"url": url},
+        }
+        content = (
+            [{"type": "text", "text": "Image: synthetic.png"}] if include_text else []
+        ) + [image]
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "read-image",
+                        "function": {"name": "read", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "read-image", "content": content},
+        ]
+        original = deepcopy(messages)
+        _, body = prepare_messages(messages)
+        result = body[1]["content"][0]
+        assert result["tool_use_id"] == "read-image"
+        assert result["content"] == (
+            ([{"type": "text", "text": "Image: synthetic.png"}] if include_text else [])
+            + [{"type": "image", "source": {"type": "url", "url": url}}]
+        )
+        assert messages == original
+
     @pytest.mark.parametrize("role", ["system", "user", "assistant"])
     @pytest.mark.parametrize(
         "blank", ["", " \t\r\n", [{"type": "text", "text": "\n\n"}]]

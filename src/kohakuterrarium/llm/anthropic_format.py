@@ -126,10 +126,16 @@ def sanitized_native_content(msg: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def append_tool_result(body: list[dict[str, Any]], msg: dict[str, Any]) -> None:
+    content = msg.get("content", "")
+    has_images = isinstance(content, list) and any(
+        isinstance(part, dict) and part.get("type") == "image_url" for part in content
+    )
     block = {
         "type": "tool_result",
         "tool_use_id": str(msg.get("tool_call_id") or ""),
-        "content": content_text(msg.get("content", "")),
+        # Anthropic accepts image blocks inside tool_result.content. Flattening
+        # them to text leaves the model with only the read tool's file metadata.
+        "content": user_content(content) if has_images else content_text(content),
     }
     if (
         body
@@ -170,8 +176,12 @@ def user_content(content: Any) -> str | list[dict[str, Any]]:
 
 
 def image_part(part: dict[str, Any]) -> dict[str, Any]:
-    image = part.get("image_url") if isinstance(part.get("image_url"), dict) else {}
-    url = str(image.get("url") or part.get("url") or "")
+    image = part.get("image_url")
+    url = str(
+        (image.get("url") if isinstance(image, dict) else image)
+        or part.get("url")
+        or ""
+    )
     # Remote APIs cannot fetch local artifact paths, so inline them before sending.
     url = resolve_artifact_url(url)
     if url.startswith("data:"):

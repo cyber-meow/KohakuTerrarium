@@ -1170,7 +1170,21 @@ class TestLlmIntegration:
             assert outgoing[0]["content"][0]["type"] == "image"
             assert outgoing[1]["content"][0]["id"] == "switch-call"
             assert outgoing[2]["content"][0]["tool_use_id"] == "switch-call"
-            assert outgoing[2]["content"][0]["content"] == ""
+            tool_content = outgoing[2]["content"][0]["content"]
+            if isinstance(tool_content, list):
+                assert tool_content == [
+                    {"type": "text", "text": "Image: synthetic.png"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "AAAA",
+                        },
+                    },
+                ]
+            else:
+                assert tool_content == ""
             assert outgoing[3]["content"][0]["text"] == "  Continue.\n"
             for message in outgoing:
                 for block in message["content"]:
@@ -1203,6 +1217,16 @@ class TestLlmIntegration:
             assert reply.content == "Continued."
             assert json.dumps(switched_wire) == saved_wire
             assert messages_to_dicts(dicts_to_messages(switched_wire)) == switched_wire
+            switched[2] = ToolMessage(
+                [TextPart("Image: synthetic.png"), image],
+                tool_call_id="switch-call",
+            )
+            image_tool_wire = messages_to_dicts(switched)
+            saved_image_tool_wire = json.dumps(image_tool_wire)
+            assert (
+                await anthropic.chat_complete(image_tool_wire)
+            ).content == "Continued."
+            assert json.dumps(image_tool_wire) == saved_image_tool_wire
         finally:
             await anthropic.close()
 

@@ -31,6 +31,11 @@ from kohakuterrarium.llm.codex_format import (
     fix_tool_call_pairing,
     to_responses_input,
 )
+from kohakuterrarium.llm.codex_image_budget import (
+    CODEX_MAX_IMAGES,
+    limit_codex_images,
+    reported_image_limit,
+)
 from kohakuterrarium.llm.codex_image_gen import (
     translate_image_gen_tool,
 )
@@ -87,6 +92,12 @@ class CodexOAuthProvider(BaseLLMProvider):
         self._retry_policy = RetryPolicy.from_value(retry_policy)
         self._api_key = api_key
         self._base_url = base_url
+        self._request_image_limit = (
+            CODEX_MAX_IMAGES
+            if not api_key
+            and (base_url or CODEX_BASE_URL).rstrip("/") == CODEX_BASE_URL
+            else None
+        )
         self.extra_body = dict(extra_body or {})
         self._ws_connection_options = ws_options.build_websocket_connection_options(
             self.extra_body.get("websocket_connection_options"), timeout=timeout
@@ -266,6 +277,7 @@ class CodexOAuthProvider(BaseLLMProvider):
         recovery = kwargs.get("_ws_recovery")
         attempt = 0
         auth_retry = False
+        image_retry = False
         overflow_state = OverflowRecoveryState()
         try:
             while True:
@@ -286,6 +298,19 @@ class CodexOAuthProvider(BaseLLMProvider):
                             yield chunk
                     return
                 except Exception as exc:
+                    limit = reported_image_limit(exc, self._request_image_limit)
+                    if (
+                        limit is not None
+                        and not image_retry
+                        and not emitted
+                        and not (recovery is not None and recovery.delivered)
+                    ):
+                        self._request_image_limit = limit
+                        image_retry = True
+                        if recovery is None or recovery.has_budget:
+                            if self._ws_session is not None:
+                                self._ws_session.invalidate()
+                            continue
                     if recovery is not None and (
                         recovery.delivered or not recovery.has_budget
                     ):
@@ -358,7 +383,6 @@ class CodexOAuthProvider(BaseLLMProvider):
         if not self._client:
             self._rebuild_client()
 
-        # Responses API carries system content separately as instructions.
         instructions = ""
         input_messages = []
         for msg in messages:
@@ -369,7 +393,7 @@ class CodexOAuthProvider(BaseLLMProvider):
 
         echo_options = dict(model=self.model, extra_body=deepcopy(self.extra_body))
         api_input = to_responses_input(
-            input_messages,
+            limit_codex_images(input_messages, self._request_image_limit),
             model=self.model,
             replay_reasoning=self.extra_body.get("responses_reasoning_replay"),
         )

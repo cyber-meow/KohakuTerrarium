@@ -38,6 +38,7 @@ from typing import Any
 
 import httpx
 import pytest
+from anthropic import AsyncAnthropic
 from openai import APIStatusError
 from PIL import Image
 from websockets import serve
@@ -58,6 +59,7 @@ from kohakuterrarium.llm import api_keys as ak
 from kohakuterrarium.llm import artifact_resolve
 from kohakuterrarium.llm import backends as backends_mod
 from kohakuterrarium.llm import presets as presets_mod
+from kohakuterrarium.llm.anthropic_provider import AnthropicProvider
 from kohakuterrarium.llm.backends import (
     _normalize_backend_type,
     legacy_provider_from_data,
@@ -1144,6 +1146,66 @@ class TestLlmIntegration:
         #    stable, which is what makes session resume safe.
         assert [m.to_dict() for m in rebuilt] == wire
 
+        switched = [
+            UserMessage([TextPart("\n\n"), image]),
+            AssistantMessage(
+                "\n\n",
+                tool_calls=[
+                    {
+                        "id": "switch-call",
+                        "function": {"name": "read", "arguments": "{}"},
+                    }
+                ],
+            ),
+            ToolMessage("", tool_call_id="switch-call"),
+            AssistantMessage("\n\n"),
+            UserMessage("  Continue.\n"),
+        ]
+        switched_wire = messages_to_dicts(switched)
+        saved_wire = json.dumps(switched_wire)
+
+        def anthropic_http(request):
+            outgoing = json.loads(request.content)["messages"]
+            assert len(outgoing) == 4
+            assert outgoing[0]["content"][0]["type"] == "image"
+            assert outgoing[1]["content"][0]["id"] == "switch-call"
+            assert outgoing[2]["content"][0]["tool_use_id"] == "switch-call"
+            assert outgoing[2]["content"][0]["content"] == ""
+            assert outgoing[3]["content"][0]["text"] == "  Continue.\n"
+            for message in outgoing:
+                for block in message["content"]:
+                    if block["type"] == "text":
+                        assert block["text"].strip()
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg-synthetic",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-opus-5-5",
+                    "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "Continued."}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            )
+
+        anthropic = AnthropicProvider(api_key="synthetic", model="claude-opus-5-5")
+        await anthropic.close()
+        anthropic._client = AsyncAnthropic(
+            api_key="synthetic",
+            max_retries=0,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(anthropic_http)
+            ),
+        )
+        try:
+            reply = await anthropic.chat_complete(switched_wire)
+            assert reply.content == "Continued."
+            assert json.dumps(switched_wire) == saved_wire
+            assert messages_to_dicts(dicts_to_messages(switched_wire)) == switched_wire
+        finally:
+            await anthropic.close()
+
         # Text-only content stays a plain string, never a list.
         assert make_multimodal_content("just text", images=None) == "just text"
         assert UserMessage("plain").to_dict() == {
@@ -1640,6 +1702,60 @@ class TestLlmIntegration:
                 assert reply.content == "A red square."
                 assert responses_requests[-1]["input"][1] == reasoning_item
             assert restored.to_messages() == saved_history
+
+            budget_requests = []
+
+            def budget_response(request):
+                body = json.loads(request.content)
+                budget_requests.append(body)
+                count = sum(
+                    part["type"] == "input_image"
+                    for part in body["input"][0]["content"]
+                )
+                if count > 50:
+                    return httpx.Response(
+                        400,
+                        json={
+                            "error": {
+                                "message": "Exceeded maximum number of images (50) allowed in the request"
+                            }
+                        },
+                    )
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content='data: {"type":"response.output_text.delta","delta":"bounded"}\n\n',
+                )
+
+            previous_client = responses_provider._client
+            responses_provider._client = previous_client.with_options(
+                http_client=httpx.AsyncClient(
+                    transport=httpx.MockTransport(budget_response)
+                )
+            )
+            await previous_client.close()
+            budget_history = [
+                UserMessage(
+                    [
+                        ImagePart(url=f"https://example.invalid/synthetic/{index}")
+                        for index in range(56)
+                    ]
+                )
+            ]
+            saved_budget_history = messages_to_dicts(budget_history)
+            bounded = await responses_provider.chat_complete(budget_history)
+            assert bounded.content == "bounded" and len(budget_requests) == 2
+            assert len(budget_requests[0]["input"][0]["content"]) == 56
+            parts = budget_requests[1]["input"][0]["content"]
+            assert "6 image(s) omitted" in parts[0]["text"]
+            assert [part["image_url"] for part in parts[1:]] == [
+                f"https://example.invalid/synthetic/{index}" for index in range(6, 56)
+            ]
+            assert messages_to_dicts(budget_history) == saved_budget_history
+            assert (
+                await responses_provider.chat_complete(budget_history)
+            ).content == "bounded"
+            assert budget_requests[2]["input"] == budget_requests[1]["input"]
         finally:
             await responses_provider.close()
 

@@ -1163,6 +1163,7 @@ class TestLlmIntegration:
         ]
         switched_wire = messages_to_dicts(switched)
         saved_wire = json.dumps(switched_wire)
+        expected_jpeg = None
 
         def anthropic_http(request):
             outgoing = json.loads(request.content)["messages"]
@@ -1171,7 +1172,14 @@ class TestLlmIntegration:
             assert outgoing[1]["content"][0]["id"] == "switch-call"
             assert outgoing[2]["content"][0]["tool_use_id"] == "switch-call"
             tool_content = outgoing[2]["content"][0]["content"]
-            if isinstance(tool_content, list):
+            if expected_jpeg is not None:
+                assert "image/jpeg" in tool_content[0]["text"]
+                nested_image = tool_content[1]
+                assert nested_image["type"] == "image"
+                assert nested_image["source"]["type"] == "base64"
+                assert nested_image["source"]["media_type"] == "image/jpeg"
+                assert base64.b64decode(nested_image["source"]["data"]) == expected_jpeg
+            elif isinstance(tool_content, list):
                 assert tool_content == [
                     {"type": "text", "text": "Image: synthetic.png"},
                     {
@@ -1227,6 +1235,42 @@ class TestLlmIntegration:
                 await anthropic.chat_complete(image_tool_wire)
             ).content == "Continued."
             assert json.dumps(image_tool_wire) == saved_image_tool_wire
+
+            jpeg_buffer = io.BytesIO()
+            Image.new("RGB", (2, 2), "blue").save(jpeg_buffer, format="JPEG")
+            expected_jpeg = jpeg_buffer.getvalue()
+            mime_sessions = tmp_path / "mime-sessions"
+            mime_artifacts = mime_sessions / "synthetic-mime.artifacts"
+            mime_artifacts.mkdir(parents=True)
+            mislabeled = mime_artifacts / "synthetic-jpeg.png"
+            mislabeled.write_bytes(expected_jpeg)
+            jpeg_result = await ReadTool().execute(
+                {"path": str(mislabeled)},
+                context=ToolContext(
+                    agent_name="reader", session=None, working_dir=tmp_path
+                ),
+            )
+            assert jpeg_result.success
+            assert jpeg_result.output[1].url == mislabeled.resolve().as_uri()
+            switched[2] = ToolMessage(
+                [
+                    jpeg_result.output[0],
+                    ImagePart(
+                        url="/api/sessions/synthetic-mime/artifacts/synthetic-jpeg.png"
+                    ),
+                ],
+                tool_call_id="switch-call",
+            )
+            saved_jpeg_history = json.dumps(messages_to_dicts(switched))
+            replayed_jpeg_history = json.loads(saved_jpeg_history)
+            with monkeypatch.context() as mime_patch:
+                mime_patch.setattr(
+                    artifact_resolve, "_session_dir", lambda: mime_sessions
+                )
+                assert (
+                    await anthropic.chat_complete(replayed_jpeg_history)
+                ).content == "Continued."
+            assert json.dumps(replayed_jpeg_history) == saved_jpeg_history
         finally:
             await anthropic.close()
 

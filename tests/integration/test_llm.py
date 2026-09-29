@@ -1164,15 +1164,27 @@ class TestLlmIntegration:
         switched_wire = messages_to_dicts(switched)
         saved_wire = json.dumps(switched_wire)
         expected_jpeg = None
+        expect_resized_image = False
 
         def anthropic_http(request):
-            outgoing = json.loads(request.content)["messages"]
+            request_body = json.loads(request.content)
+            outgoing = request_body["messages"]
             assert len(outgoing) == 4
             assert outgoing[0]["content"][0]["type"] == "image"
             assert outgoing[1]["content"][0]["id"] == "switch-call"
             assert outgoing[2]["content"][0]["tool_use_id"] == "switch-call"
             tool_content = outgoing[2]["content"][0]["content"]
-            if expected_jpeg is not None:
+            if expect_resized_image:
+                assert len(outgoing[0]["content"]) == 20
+                assert all(
+                    block["source"]["data"] == small_png_base64
+                    for block in outgoing[0]["content"]
+                )
+                resized = tool_content[1]["source"]
+                assert resized["media_type"] == "image/png"
+                with Image.open(io.BytesIO(base64.b64decode(resized["data"]))) as im:
+                    assert im.size == (2000, 800)
+            elif expected_jpeg is not None:
                 assert "image/jpeg" in tool_content[0]["text"]
                 nested_image = tool_content[1]
                 assert nested_image["type"] == "image"
@@ -1198,6 +1210,45 @@ class TestLlmIntegration:
                 for block in message["content"]:
                     if block["type"] == "text":
                         assert block["text"].strip()
+            if request_body.get("stream"):
+                events = [
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": "msg-resize",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": "claude-opus-5-5",
+                            "content": [],
+                            "usage": {"input_tokens": 1, "output_tokens": 0},
+                        },
+                    },
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "Continued."},
+                    },
+                    {"type": "content_block_stop", "index": 0},
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"},
+                        "usage": {"output_tokens": 1},
+                    },
+                    {"type": "message_stop"},
+                ]
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content="".join(
+                        f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                        for event in events
+                    ),
+                )
             return httpx.Response(
                 200,
                 json={
@@ -1271,6 +1322,38 @@ class TestLlmIntegration:
                     await anthropic.chat_complete(replayed_jpeg_history)
                 ).content == "Continued."
             assert json.dumps(replayed_jpeg_history) == saved_jpeg_history
+
+            # Old turns and nested tool results together cross the 20-image
+            # threshold. Only the outbound large image is resized in both paths.
+            small = io.BytesIO()
+            Image.new("RGB", (2, 2), "green").save(small, format="PNG")
+            small_png_base64 = base64.b64encode(small.getvalue()).decode("ascii")
+            large = io.BytesIO()
+            Image.new("RGBA", (2500, 1000), (10, 20, 30, 100)).save(large, format="PNG")
+            large_path = tmp_path / "large-screenshot.png"
+            large_path.write_bytes(large.getvalue())
+            switched[0] = UserMessage(
+                [
+                    ImagePart(url=f"data:image/png;base64,{small_png_base64}")
+                    for _ in range(20)
+                ]
+            )
+            switched[2] = ToolMessage(
+                [TextPart("Large screenshot"), ImagePart(url=large_path.as_uri())],
+                tool_call_id="switch-call",
+            )
+            size_wire = messages_to_dicts(switched)
+            saved_size_wire = json.dumps(size_wire)
+            expect_resized_image = True
+            assert (await anthropic.chat_complete(size_wire)).content == "Continued."
+            assert (
+                "".join(
+                    [chunk async for chunk in anthropic.chat(size_wire, stream=True)]
+                )
+                == "Continued."
+            )
+            assert json.dumps(size_wire) == saved_size_wire
+            assert large_path.read_bytes() == large.getvalue()
         finally:
             await anthropic.close()
 

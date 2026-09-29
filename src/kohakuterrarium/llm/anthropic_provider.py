@@ -34,6 +34,7 @@ from kohakuterrarium.llm.anthropic_format import (
     usage_to_dict,
 )
 from kohakuterrarium.llm.api_keys import get_api_key
+from kohakuterrarium.llm.anthropic_images import prepare_anthropic_images
 from kohakuterrarium.llm.base import (
     BaseLLMProvider,
     ChatResponse,
@@ -263,8 +264,8 @@ class AnthropicProvider(BaseLLMProvider):
         self._last_usage = {}
         self._last_assistant_extra_fields = {}
 
-        create_kwargs = self._build_create_kwargs(
-            messages, tools=tools, stream=True, **kwargs
+        create_kwargs = await asyncio.to_thread(
+            self._build_create_kwargs, messages, tools=tools, stream=True, **kwargs
         )
         logger.debug(
             "Anthropic API request",
@@ -374,7 +375,9 @@ class AnthropicProvider(BaseLLMProvider):
         self._last_usage = {}
         self._last_assistant_extra_fields = {}
 
-        create_kwargs = self._build_create_kwargs(messages, stream=False, **kwargs)
+        create_kwargs = await asyncio.to_thread(
+            self._build_create_kwargs, messages, stream=False, **kwargs
+        )
         log_request_shape(
             "Starting Anthropic non-streaming request",
             create_kwargs["model"],
@@ -436,6 +439,7 @@ class AnthropicProvider(BaseLLMProvider):
         **kwargs: Any,
     ) -> dict[str, Any]:
         system, anthropic_messages = prepare_messages(messages)
+        anthropic_messages = prepare_anthropic_images(anthropic_messages)
         create_kwargs: dict[str, Any] = {
             "model": kwargs.get("model", self.config.model),
             "messages": anthropic_messages,

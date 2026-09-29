@@ -648,6 +648,36 @@ class TestApiTerrariumJourney:
             assert err_frame["type"] == "error"
             assert "not found" in err_frame["content"]
 
+        # Removing a retired channel clears the live graph and emits a graph
+        # update while retaining its persisted messages and every creature.
+        saved_path = tmp_path / "sessions" / f"{session_id}.kohakutr"
+        with SessionReader(saved_path) as reader:
+            channel_history = reader.channel_messages("ops")
+        assert channel_history
+        with client.websocket_connect("/ws/runtime/graph") as graph_ws:
+            _drain_until(graph_ws, lambda frame: frame.get("type") == "snapshot")
+            response = client.delete(
+                f"/api/sessions/topology/{session_id}/channels/ops"
+            )
+            assert response.status_code == 200
+            assert response.json()["removed"] == "ops"
+            _drain_until(
+                graph_ws, lambda frame: frame.get("type") == "topology_changed"
+            )
+        graph = next(
+            graph
+            for graph in client.get("/api/runtime/graph").json()["graphs"]
+            if graph["graph_id"] == session_id
+        )
+        assert "ops" not in {channel["name"] for channel in graph["channels"]}
+        assert {creature["name"] for creature in graph["creatures"]} == {
+            "alice",
+            "bob",
+            "carol",
+        }
+        with SessionReader(saved_path) as reader:
+            assert reader.channel_messages("ops") == channel_history
+
         # 8. Closing a creature keeps its history and the peers alive.
         with client.websocket_connect(
             f"/ws/sessions/{session_id}/creatures/{carol_id}/chat"

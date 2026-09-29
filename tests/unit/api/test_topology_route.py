@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 
 from kohakuterrarium.api.deps import get_engine, get_service
 from kohakuterrarium.api.routes.sessions_v2 import topology as topology_mod
+from kohakuterrarium.terrarium.service import LocalTerrariumService
+from kohakuterrarium.testing.terrarium import TestTerrariumBuilder
 
 
 class _FakeService:
@@ -108,6 +110,37 @@ class TestListChannels:
 
 
 # ── add_session_channel ────────────────────────────────────────
+
+
+class TestRemoveChannel:
+    async def test_scoped_removal_preserves_creatures_and_other_channels(self):
+        engine = await (
+            TestTerrariumBuilder()
+            .with_creature("alice")
+            .with_creature("bob")
+            .with_channel("leftover")
+            .with_connection("alice", "bob", channel="shared")
+            .build()
+        )
+        try:
+            service = LocalTerrariumService(engine)
+            gid = engine.get_creature("alice").graph_id
+            with TestClient(_app(service=service)) as client:
+                assert (
+                    client.delete("/topology/missing/channels/leftover").status_code
+                    == 404
+                )
+                response = client.delete(f"/topology/{gid}/channels/leftover")
+                assert response.status_code == 200
+                assert response.json()["removed"] == "leftover"
+                assert (
+                    client.delete(f"/topology/{gid}/channels/leftover").status_code
+                    == 404
+                )
+            assert {c.creature_id for c in engine.list_creatures()} == {"alice", "bob"}
+            assert {c.name for c in await service.list_channels(gid)} == {"shared"}
+        finally:
+            await engine.shutdown()
 
 
 class TestAddChannel:

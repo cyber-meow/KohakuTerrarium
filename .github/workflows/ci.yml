@@ -11,6 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: a6a4885b137a6132a71667a87c09d704debee9f4
+      - name: Verify candidate checkout a6a4885b137a6132a71667a87c09d704debee9f4
+        shell: bash
+        working-directory: .
+        run: test "$(git rev-parse HEAD)" = "a6a4885b137a6132a71667a87c09d704debee9f4"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -38,7 +44,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: a6a4885b137a6132a71667a87c09d704debee9f4
           submodules: true
+      - name: Verify candidate checkout a6a4885b137a6132a71667a87c09d704debee9f4
+        shell: bash
+        working-directory: .
+        run: test "$(git rev-parse HEAD)" = "a6a4885b137a6132a71667a87c09d704debee9f4"
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -72,7 +83,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: a6a4885b137a6132a71667a87c09d704debee9f4
           submodules: true
+      - name: Verify candidate checkout a6a4885b137a6132a71667a87c09d704debee9f4
+        shell: bash
+        working-directory: .
+        run: test "$(git rev-parse HEAD)" = "a6a4885b137a6132a71667a87c09d704debee9f4"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -87,7 +103,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: a6a4885b137a6132a71667a87c09d704debee9f4
           submodules: true
+      - name: Verify candidate checkout a6a4885b137a6132a71667a87c09d704debee9f4
+        shell: bash
+        working-directory: .
+        run: test "$(git rev-parse HEAD)" = "a6a4885b137a6132a71667a87c09d704debee9f4"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -104,6 +125,12 @@ jobs:
         working-directory: src/kohakuterrarium-frontend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: a6a4885b137a6132a71667a87c09d704debee9f4
+      - name: Verify candidate checkout a6a4885b137a6132a71667a87c09d704debee9f4
+        shell: bash
+        working-directory: .
+        run: test "$(git rev-parse HEAD)" = "a6a4885b137a6132a71667a87c09d704debee9f4"
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -133,6 +160,12 @@ jobs:
         working-directory: extensions/vscode
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: a6a4885b137a6132a71667a87c09d704debee9f4
+      - name: Verify candidate checkout a6a4885b137a6132a71667a87c09d704debee9f4
+        shell: bash
+        working-directory: .
+        run: test "$(git rev-parse HEAD)" = "a6a4885b137a6132a71667a87c09d704debee9f4"
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -167,7 +200,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: a6a4885b137a6132a71667a87c09d704debee9f4
           submodules: true
+      - name: Verify candidate checkout a6a4885b137a6132a71667a87c09d704debee9f4
+        shell: bash
+        working-directory: .
+        run: test "$(git rev-parse HEAD)" = "a6a4885b137a6132a71667a87c09d704debee9f4"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
